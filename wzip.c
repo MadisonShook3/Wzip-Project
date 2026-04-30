@@ -10,6 +10,50 @@
 int prev_char;
 int count;
 
+typedef struct {
+	char *data;
+	int start;
+	int end;
+	
+	int *counts;
+	char *chars;
+	int size;
+} thread_arg_t;
+
+void *worker(void *arg) {
+	thread_arg_t *targ = (thread_arg_t *)arg;
+	//later compress targ -> data from targ->start to targ->end
+	if(targ->start >= targ->end) {
+		targ->size = 0;
+		return NULL;
+	}
+
+	int prev = targ->data[targ->start];
+    int count = 1;
+    targ->size = 0;
+
+    for(int i = targ->start + 1; i < targ->end; i++) {
+        int curr = targ->data[i];
+
+        if(curr == prev) {
+            count++;
+        } else {
+            targ->counts[targ->size] = count;
+            targ->chars[targ->size] = prev;
+            targ->size++;
+
+            prev = curr;
+            count = 1;
+        }
+    }
+
+    targ->counts[targ->size] = count;
+    targ->chars[targ->size] = prev;
+    targ->size++;
+
+	return NULL;
+}
+
 int main(int argc, char *argv[]) {
    if(argc <= 1) {    //if no file after ./wzip
         printf("wzip: file1 [file2 ...]\n");
@@ -45,37 +89,72 @@ int main(int argc, char *argv[]) {
 				close(fd);
 				return 1;
 			}
+
+			int first_start = 0;
 			if(i == 1) {
 				prev_char = data[0];
 				count = 1;
-				for(int j = 1; j < st.st_size; j++) {
-					int new_char = data[j];
-					if(new_char == prev_char) {
-						count++;
-					} else {
-						fwrite(&count, sizeof(int), 1, stdout);
-                		fwrite(&prev_char, sizeof(char), 1, stdout);
-                		prev_char = new_char;
-                		count = 1;
-            		}
-        		}
-    		} else {
-        		for (int j = 0; j < st.st_size; j++) {
-            		int new_char = data[j];
+				first_start = 1;
+			}
 
-            		if (new_char == prev_char) {
-                		count++;
-            		} else {
-                		fwrite(&count, sizeof(int), 1, stdout);
-                		fwrite(&prev_char, sizeof(char), 1, stdout);
-                		prev_char = new_char;
-                		count = 1;
-            		}
-        		}
-			}  
+    		pthread_t threads[3];
+			thread_arg_t args[3];
+
+			int chunk = st.st_size / 3;
+
+			args[0].data = data;
+			args[0].start = first_start;
+			args[0].end = chunk;
+
+			args[1].data = data;
+			args[1].start = chunk;
+			args[1].end = chunk * 2;
+
+			args[2].data = data;
+			args[2].start = chunk * 2;
+			args[2].end = st.st_size;
+			
+			for(int t = 0; t < 3; t++) {
+				int max_runs = args[t].end - args[t].start;
+				args[t].counts = malloc(sizeof(int) * max_runs);
+				args[t].chars = malloc(sizeof(char) * max_runs);
+				args[t].size = 0;
+			}
+			// create threads
+			for (int t = 0; t < 3; t++) {
+    			pthread_create(&threads[t], NULL, worker, &args[t]);
+			}
+
+			// join threads
+			for (int t = 0; t < 3; t++) {
+    			pthread_join(threads[t], NULL);
+			}
+
+			for(int t = 0; t < 3; t++) {
+    			for(int k = 0; k < args[t].size; k++) {
+        			int new_count = args[t].counts[k];
+        			char new_char = args[t].chars[k];
+
+        			if(new_char == prev_char) {
+            			count += new_count;
+        			} else {
+            			fwrite(&count, sizeof(int), 1, stdout);
+            			fwrite(&prev_char, sizeof(char), 1, stdout);
+
+            			prev_char = new_char;
+            			count = new_count;
+        			}
+    			}
+			}
+			
+			for(int t = 0; t < 3; t++) {
+				free(args[t].counts);
+				free(args[t].chars);
+			}
+
 			munmap(data, st.st_size);
-    		close(fd);    
-    	}
+			close(fd);
+		}
 	}
 
     fwrite(&count, sizeof(int), 1, stdout);    //write the value
